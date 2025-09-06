@@ -695,9 +695,6 @@ void setup() {
   #if defined(OPENLRSv2MULTI)
     initOpenLRS();
   #endif
-  #if defined(NRF24_RX)
-    NRF24_Init();
-  #endif
   initSensors();
   #if GPS
     GPS_set_pids();
@@ -719,7 +716,7 @@ void setup() {
     GPS_conf.max_wp_number = getMaxWPNumber(); 
   #endif
   
-  #if defined(LCD_ETPP) || defined(LCD_LCD03) || defined(OLED_I2C_128x64) || defined(OLED_DIGOLE) || defined(LCD_TELEMETRY_STEP)
+  #if defined(LCD_ETPP) || defined(LCD_LCD03) || defined(LCD_LCD03S) || defined(OLED_I2C_128x64) || defined(OLED_DIGOLE) || defined(LCD_TELEMETRY_STEP)
     initLCD();
   #endif
   #ifdef LCD_TELEMETRY_DEBUG
@@ -1036,12 +1033,13 @@ void loop () {
     #if defined(EXTENDED_AUX_STATES)
     uint32_t auxState = 0;
     for(i=0;i<4;i++)
-      auxState |= (rcData[AUX1+i]<1230)<<(6*i) | 
-      (1231<rcData[AUX1+i] && rcData[AUX1+i]<1360)<<(6*i+1) |
-      (1361<rcData[AUX1+i] && rcData[AUX1+i]<1490)<<(6*i+2) |
-      (1491<rcData[AUX1+i] && rcData[AUX1+i]<1620)<<(6*i+3) |
-      (1621<rcData[AUX1+i] && rcData[AUX1+i]<1749)<<(6*i+4) |
-      (rcData[AUX1+i]>1750)<<(6*i+5);
+      auxState |=
+      (uint32_t)(rcData[AUX1+i]<1230)<<(6*i) |
+      (uint32_t)(1231<rcData[AUX1+i] && rcData[AUX1+i]<1360)<<(6*i+1) |
+      (uint32_t)(1361<rcData[AUX1+i] && rcData[AUX1+i]<1490)<<(6*i+2) |
+      (uint32_t)(1491<rcData[AUX1+i] && rcData[AUX1+i]<1620)<<(6*i+3) |
+      (uint32_t)(1621<rcData[AUX1+i] && rcData[AUX1+i]<1749)<<(6*i+4) |
+      (uint32_t)(rcData[AUX1+i]>1750)<<(6*i+5);
     #else
     uint16_t auxState = 0;
     for(i=0;i<4;i++)
@@ -1060,7 +1058,9 @@ void loop () {
           f.ANGLE_MODE = 1;
         }  
       } else {
-        // failsafe support
+        if(f.ANGLE_MODE){
+          errorGyroI[ROLL] = 0; errorGyroI[PITCH] = 0;
+        }
         f.ANGLE_MODE = 0;
       }
       if ( rcOptions[BOXHORIZON] ) {
@@ -1070,6 +1070,9 @@ void loop () {
           f.HORIZON_MODE = 1;
         }
       } else {
+        if(f.HORIZON_MODE){
+          errorGyroI[ROLL] = 0;errorGyroI[PITCH] = 0;
+        }
         f.HORIZON_MODE = 0;
       }
     #endif
@@ -1156,6 +1159,7 @@ void loop () {
               if (f.GPS_mode == GPS_MODE_NAV)
                 NAV_paused_at = mission_step.number;
               f.GPS_mode = GPS_MODE_HOLD;
+              f.GPS_BARO_MODE = false;
               GPS_set_next_wp(&GPS_coord[LAT], &GPS_coord[LON],&GPS_coord[LAT], & GPS_coord[LON]); //hold at the current position
               set_new_altitude(alt.EstAlt);                                //and current altitude
               NAV_state = NAV_STATE_HOLD_INFINIT;
@@ -1462,20 +1466,18 @@ void loop () {
 
   //----------PID controller----------
   for(axis=0;axis<3;axis++) {
+    //-----Get the desired angle rate depending on flight mode
+    if ((f.ANGLE_MODE || f.HORIZON_MODE) && axis<2 ) { // MODE relying on ACC
       // calculate error and limit the angle to 50 degrees max inclination
+      errorAngle = constrain((rcCommand[axis]<<1) + GPS_angle[axis],-500,+500) - att.angle[axis] + conf.angleTrim[axis]; //16 bits is ok here
     }
+    if (axis == 2) {//YAW is always gyro-controlled (MAG correction is applied to rcCommand)
+      AngleRateTmp = (((int32_t) (conf.yawRate + 27) * rcCommand[2]) >> 5);
     } else {
       if (!f.ANGLE_MODE) {//control is GYRO based (ACRO and HORIZON - direct sticks control is applied to rate PID
-  #endif
-  #ifdef TELEMETRY
-    run_telemetry();
-  #endif
-  #ifdef TELEMETRY
-    run_telemetry();
-  #endif
-}
-  #endif
-}
+        AngleRateTmp = ((int32_t) (conf.rollPitchRate + 27) * rcCommand[axis]) >> 4;
+        if (f.HORIZON_MODE) {
+          //mix up angle error to desired AngleRateTmp to add a little auto-level feel
           AngleRateTmp += ((int32_t) errorAngle * conf.pid[PIDLEVEL].I8)>>8;
         }
       } else {//it's the ANGLE mode - control is angle based, so control loop is needed
